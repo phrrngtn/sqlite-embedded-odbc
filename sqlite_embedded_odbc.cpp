@@ -28,7 +28,7 @@ using namespace std;
 
 
 // This needs to be callable from C
-extern "C" SQLITE_EXTENSION_ENTRY_POINT int sqlite3_embedded_odbc_init(
+extern "C" SQLITE_EXTENSION_ENTRY_POINT int sqlite_embedded_odbc_init(
       sqlite3 *db,
       char **pzErrMsg,
       const sqlite3_api_routines *pApi);
@@ -124,6 +124,12 @@ column_to_function(nanodbc::result& result, short column_number){
   return fp;
 }
 
+
+void result_to_clob(string &clob, nanodbc::result& result){
+  result.next();
+  clob = result.get<string>(0);
+}
+
 void result_to_json(nlohmann::ordered_json& retval, nanodbc::result& result){
   int n = result.columns();
   std::vector<string> column_names(n);
@@ -155,6 +161,53 @@ void result_to_json(nlohmann::ordered_json& retval, nanodbc::result& result){
       }
       retval.push_back(j);
   }
+}
+
+
+static void openrowset_clob_func(
+    sqlite3_context *context,
+    int argc,
+    sqlite3_value **argv)
+{
+  // TODO: replace with an error
+  // TODO: support bind array and/or single bind params
+  assert(argc == 2);
+
+  // do some more soundess checking
+  if (sqlite3_value_type(argv[0]) == SQLITE_NULL)
+    return;
+
+  std::string odbc_connection_string, query_string, clob;
+
+  // hope that overloaded assignment operator will do the right thing.
+  // I don't know if there is a cleaner way to do this.
+  odbc_connection_string = (reinterpret_cast<const char *>(sqlite3_value_text(argv[0])));
+  query_string = (reinterpret_cast<const char *>(sqlite3_value_text(argv[1])));
+  // TODO: figure out when to return an error vs sqlite3_result_null
+  try
+  {
+    nanodbc::connection conn(odbc_connection_string);
+    auto result = nanodbc::execute(conn, query_string);
+    result_to_clob(clob, result);
+  }
+  catch (std::runtime_error e) {
+    std::string message = e.what();
+    sqlite3_result_error(context, message.data(), (int)message.length());
+    return;
+  }
+
+  // TODO: perhaps use the sqlite3_result_blob interface?
+  // For the kind of data volumes envisioned, it does not seem necessary 
+  // and would likely be a complication. It seems unlikely that we will ever have
+  // any kind of data that is sufficiently large to require streaming. Using incremental
+  // reads from the underlying ODBC API (if indeed such APIs event exist. I simply don't know)
+  // seems like it would be difficult and error prone. This approach should be 'good enough'
+  // for the moment.
+  sqlite3_result_text(context, clob.data(), (int)clob.length(), SQLITE_TRANSIENT);
+  // not sure if we have to do anything with freeing 'expanded'
+  // I think it will be taken care of by the runtime simply by going out of scope
+  // and that nothing has to be done to it explicitly.
+  return;
 }
 
 
@@ -217,7 +270,7 @@ static void openrowset_json_func(
 // it needs to have C style symbol which is globally visible. Verify with DUMPBIN /EXPORTS  (Windows)
 // or nm (Linux) once the dll has been built.
 
-int sqlite3_embedded_odbc_init(
+int sqlite_embedded_odbc_init(
     sqlite3 *db,
     char **pzErrMsg,
     const sqlite3_api_routines *pApi)
@@ -228,5 +281,9 @@ int sqlite3_embedded_odbc_init(
   rc = sqlite3_create_function(db, "openrowset_json", 2,
                                SQLITE_UTF8 | SQLITE_DETERMINISTIC,
                                0, openrowset_json_func, 0, 0);
+
+  rc = sqlite3_create_function(db, "openrowset_clob", 2,
+                               SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+                               0, openrowset_clob_func, 0, 0);                               
   return rc;
 }
