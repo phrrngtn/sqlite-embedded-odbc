@@ -128,6 +128,11 @@ column_to_function(nanodbc::result& result, short column_number){
 void result_to_clob(string &clob, nanodbc::result& result){
   result.next();
   clob = result.get<string>(0);
+  // make sure entire result-set is consumed.
+  
+  while (result.next()) {
+    ;
+  }
 }
 
 void result_to_json(nlohmann::ordered_json& retval, nanodbc::result& result){
@@ -190,6 +195,11 @@ static void openrowset_clob_func(
     auto result = nanodbc::execute(conn, query_string);
     result_to_clob(clob, result);
   }
+  catch (nanodbc::database_error e) {
+    std::string message = e.what();
+    sqlite3_result_error(context, message.data(), (int)message.length());
+    return;
+  }
   catch (std::runtime_error e) {
     std::string message = e.what();
     sqlite3_result_error(context, message.data(), (int)message.length());
@@ -234,6 +244,7 @@ static void openrowset_json_func(
   odbc_connection_string = (reinterpret_cast<const char *>(sqlite3_value_text(argv[0])));
   query_string = (reinterpret_cast<const char *>(sqlite3_value_text(argv[1])));
   // TODO: figure out when to return an error vs sqlite3_result_null
+  // TODO: prepared statements, placeholders and bind values: want to make the code-generation safer.
   try
   {
     nanodbc::connection conn(odbc_connection_string);
@@ -242,6 +253,11 @@ static void openrowset_json_func(
     expanded = retval.dump(); // serialize the entire thing to a string
     // given that this is meant for metadata queries, the volume of data is likely to be
     // quite low and this many-functions-calls-per-value naive approach may be OK.
+  }
+  catch (nanodbc::database_error e) {
+    std::string message = e.what();
+    sqlite3_result_error(context, message.data(), (int)message.length());
+    return;
   }
   catch (json::exception e) {
     std::string message = e.what();
