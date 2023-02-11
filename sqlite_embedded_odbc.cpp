@@ -28,7 +28,7 @@ using namespace std;
 
 
 // This needs to be callable from C
-extern "C" SQLITE_EXTENSION_ENTRY_POINT int sqlite_embedded_odbc_init(
+extern "C" SQLITE_EXTENSION_ENTRY_POINT int sqlite3_openrowset_init(
       sqlite3 *db,
       char **pzErrMsg,
       const sqlite3_api_routines *pApi);
@@ -62,7 +62,7 @@ void get_timestamp_value(json& jv, nanodbc::result& result, short column_number)
   nanodbc::timestamp ts;
   char buffer [50];
   ts = result.get<nanodbc::timestamp>(column_number);
-  sprintf_s(buffer, "%d-%02d-%02d %02d:%02d:%02d.%d", 
+  sprintf_s(buffer, "%d-%02d-%02d %02d:%02d:%02d.%d",
                   ts.year,ts.month, ts.day,
                   ts.hour,ts.min, ts.sec, ts.fract);
   jv = buffer;
@@ -72,7 +72,7 @@ void get_null_value(json& jv, nanodbc::result& result, short column_number){
   jv = nullptr;
 }
 
-column_getter_function_pointer 
+column_getter_function_pointer
 column_to_function(nanodbc::result& result, short column_number){
   auto sql_type = result.column_datatype(column_number);
 
@@ -104,7 +104,7 @@ column_to_function(nanodbc::result& result, short column_number){
       case SQL_WLONGVARCHAR:
       case SQL_GUID:
           fp = &get_string_value;
-        break; 
+        break;
       case SQL_BINARY:
       case SQL_VARBINARY:
       case SQL_LONGVARBINARY:
@@ -119,7 +119,7 @@ column_to_function(nanodbc::result& result, short column_number){
         break;
       default:
           cout << "do not recognise type " << sql_type << " for column " << column_number << "\n";
-          fp = &get_null_value;   
+          fp = &get_null_value;
       }
   return fp;
 }
@@ -129,7 +129,7 @@ void result_to_clob(string &clob, nanodbc::result& result){
   result.next();
   clob = result.get<string>(0);
   // make sure entire result-set is consumed.
-  
+
   while (result.next()) {
     ;
   }
@@ -147,7 +147,7 @@ void result_to_json(nlohmann::ordered_json& retval, nanodbc::result& result){
     column_names[i]=result.column_name(i);
     function_pointers[i] = column_to_function(result, i);
   }
-  
+
   while (result.next())
   {
       // very nice to have the keys in the select order
@@ -155,14 +155,14 @@ void result_to_json(nlohmann::ordered_json& retval, nanodbc::result& result){
       for(int i=0; i< result.columns(); i++) {
         json jv;
         // Note that it is much easier to check for null in a type independent
-        // way (and set jv to nullptr, which will be serialized as null) than 
+        // way (and set jv to nullptr, which will be serialized as null) than
         // to do it within a column_getter_function
         if (result.is_null(i)) {
           jv=nullptr;
         } else {
           (*function_pointers[i])(jv,result,i);
         }
-        j[column_names[i]]=jv;    
+        j[column_names[i]]=jv;
       }
       retval.push_back(j);
   }
@@ -176,7 +176,7 @@ static void openrowset_clob_func(
 {
   // TODO: replace with an error
   // TODO: support bind array and/or single bind params
-  assert(argc == 2);
+  assert(argc >= 2);
 
   // do some more soundess checking
   if (sqlite3_value_type(argv[0]) == SQLITE_NULL)
@@ -192,7 +192,22 @@ static void openrowset_clob_func(
   try
   {
     nanodbc::connection conn(odbc_connection_string);
-    auto result = nanodbc::execute(conn, query_string);
+    nanodbc::result result;
+
+    if (argc > 2) {
+      nanodbc::statement statement(conn);
+      nanodbc::prepare(statement,query_string);
+      std::vector<string> bind_values(argc-2);
+      for (int i=2; i<argc; i++) {
+        int bv_ind = i-2;
+        bind_values[bv_ind]=(reinterpret_cast<const char *>(sqlite3_value_text(argv[i])));
+        statement.bind(bv_ind, bind_values[bv_ind].c_str());
+      }
+       result = nanodbc::execute(statement);
+    } else {
+      result = nanodbc::execute(conn, query_string);
+    }
+
     result_to_clob(clob, result);
   }
   catch (nanodbc::database_error e) {
@@ -207,7 +222,7 @@ static void openrowset_clob_func(
   }
 
   // TODO: perhaps use the sqlite3_result_blob interface?
-  // For the kind of data volumes envisioned, it does not seem necessary 
+  // For the kind of data volumes envisioned, it does not seem necessary
   // and would likely be a complication. It seems unlikely that we will ever have
   // any kind of data that is sufficiently large to require streaming. Using incremental
   // reads from the underlying ODBC API (if indeed such APIs event exist. I simply don't know)
@@ -228,7 +243,7 @@ static void openrowset_json_func(
 {
   // TODO: replace with an error
   // TODO: support bind array and/or single bind params
-  assert(argc == 2);
+  assert(argc >= 2);
 
   // do some more soundess checking
   if (sqlite3_value_type(argv[0]) == SQLITE_NULL)
@@ -248,7 +263,21 @@ static void openrowset_json_func(
   try
   {
     nanodbc::connection conn(odbc_connection_string);
-    auto result = nanodbc::execute(conn, query_string);
+    nanodbc::result result;
+    if (argc > 2) {
+      nanodbc::statement statement(conn);
+      nanodbc::prepare(statement,query_string);
+      std::vector<string> bind_values(argc-2);
+      for (int i=2; i<argc; i++) {
+        int bv_ind = i-2;
+        bind_values[bv_ind]=(reinterpret_cast<const char *>(sqlite3_value_text(argv[i])));
+        statement.bind(bv_ind, bind_values[bv_ind].c_str());
+      }
+       result = nanodbc::execute(statement);
+    } else {
+      result = nanodbc::execute(conn, query_string);
+    }
+
     result_to_json(retval, result);
     expanded = retval.dump(); // serialize the entire thing to a string
     // given that this is meant for metadata queries, the volume of data is likely to be
@@ -279,14 +308,14 @@ static void openrowset_json_func(
 }
 
 // we need
-//    -DSQLITE_API=__declspec(dllexport) 
+//    -DSQLITE_API=__declspec(dllexport)
 // for Windows.
-// Note that .load in the shell can take the initialization function name as an 
+// Note that .load in the shell can take the initialization function name as an
 // argument so that we don't have to rely on naming conventions. Whatever function is used,
 // it needs to have C style symbol which is globally visible. Verify with DUMPBIN /EXPORTS  (Windows)
 // or nm (Linux) once the dll has been built.
 
-int sqlite_embedded_odbc_init(
+int sqlite3_openrowset_init(
     sqlite3 *db,
     char **pzErrMsg,
     const sqlite3_api_routines *pApi)
@@ -294,12 +323,12 @@ int sqlite_embedded_odbc_init(
   int rc = SQLITE_OK;
   SQLITE_EXTENSION_INIT2(pApi);
   (void)pzErrMsg; /* Unused parameter */
-  rc = sqlite3_create_function(db, "openrowset_json", 2,
+  rc = sqlite3_create_function(db, "openrowset_json", -1,
                                SQLITE_UTF8 | SQLITE_DETERMINISTIC,
                                0, openrowset_json_func, 0, 0);
 
-  rc = sqlite3_create_function(db, "openrowset_clob", 2,
+  rc = sqlite3_create_function(db, "openrowset_clob", -1,
                                SQLITE_UTF8 | SQLITE_DETERMINISTIC,
-                               0, openrowset_clob_func, 0, 0);                               
+                               0, openrowset_clob_func, 0, 0);
   return rc;
 }
