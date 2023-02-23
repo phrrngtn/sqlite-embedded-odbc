@@ -1,7 +1,7 @@
 # sqlite-embedded-odbc
 
 
-SQLite extension for executing queries against remote ODBC connections. It is loosely inspired
+SQLite extension (`openrowset`) for executing queries against remote ODBC connections. It is loosely inspired
 by the `OPENROWSET` function in SQL Server although in this case, there are two *scalar* functions:
 * `openrowset_clob`
 ```sql
@@ -55,7 +55,7 @@ Loading
 =======
 ```sql
 -- On Windows, Linux and Mac.
-sqlite> .load ./inja
+sqlite> .load ./openrowset
 ```
 
 Building
